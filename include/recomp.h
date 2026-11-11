@@ -92,24 +92,45 @@ typedef uint64_t gpr;
 #define SUB32(a, b) \
     ((gpr)(int32_t)((a) - (b)))
 
+// Where an address lies from rdram: KSEG0 (0x80000000 up) at its offset, and the rest 2 GB or more past it, which a
+// native build reserves (librecomp's allocation_size) and a recomp whose code reads through TLB-mapped KUSEG addresses
+// opens as it needs (recomp::make_kuseg_accessible). wasm32's pointers are 32 bits, so there rdram + 0x80000000 and up
+// wraps to anywhere in the heap. A recomp that defines RECOMP_KUSEG_WINDOW for every target it builds (the runtime's
+// too) gets a window for KUSEG's first 16 MB right after kseg0's 512 MB instead, which librecomp allocates with
+// RDRAM; a KUSEG address past it wraps inside it, never into the heap. ultramodern's TO_PTR maps the same way.
+// Without it, the offset is the native one.
+#if defined(__wasm__) && defined(RECOMP_KUSEG_WINDOW)
+#define RECOMP_KUSEG_WINDOW_BASE 0x20000000u
+#define RECOMP_KUSEG_WINDOW_SIZE 0x01000000u
+
+static inline uint32_t recomp_rdram_offset(gpr address) {
+    uint32_t a = (uint32_t)address;
+    return (a & 0x80000000u) ? a - 0x80000000u : RECOMP_KUSEG_WINDOW_BASE + (a & (RECOMP_KUSEG_WINDOW_SIZE - 1));
+}
+
+#define RECOMP_RDRAM_OFFSET(address) recomp_rdram_offset(address)
+#else
+#define RECOMP_RDRAM_OFFSET(address) ((address) - 0xFFFFFFFF80000000)
+#endif
+
 #define MEM_W(offset, reg) \
-    (*(int32_t*)(rdram + ((((reg) + (offset))) - 0xFFFFFFFF80000000)))
+    (*(int32_t*)(rdram + RECOMP_RDRAM_OFFSET(((reg) + (offset)))))
 
 #define MEM_H(offset, reg) \
-    (*(int16_t*)(rdram + ((((reg) + (offset)) ^ 2) - 0xFFFFFFFF80000000)))
+    (*(int16_t*)(rdram + RECOMP_RDRAM_OFFSET(((reg) + (offset)) ^ 2)))
 
 #define MEM_B(offset, reg) \
-    (*(int8_t*)(rdram + ((((reg) + (offset)) ^ 3) - 0xFFFFFFFF80000000)))
+    (*(int8_t*)(rdram + RECOMP_RDRAM_OFFSET(((reg) + (offset)) ^ 3)))
 
 #define MEM_HU(offset, reg) \
-    (*(uint16_t*)(rdram + ((((reg) + (offset)) ^ 2) - 0xFFFFFFFF80000000)))
+    (*(uint16_t*)(rdram + RECOMP_RDRAM_OFFSET(((reg) + (offset)) ^ 2)))
 
 #define MEM_BU(offset, reg) \
-    (*(uint8_t*)(rdram + ((((reg) + (offset)) ^ 3) - 0xFFFFFFFF80000000)))
+    (*(uint8_t*)(rdram + RECOMP_RDRAM_OFFSET(((reg) + (offset)) ^ 3)))
 
 #define SD(val, offset, reg) { \
-    *(uint32_t*)(rdram + ((((reg) + (offset) + 4)) - 0xFFFFFFFF80000000)) = (uint32_t)((gpr)(val) >> 0); \
-    *(uint32_t*)(rdram + ((((reg) + (offset) + 0)) - 0xFFFFFFFF80000000)) = (uint32_t)((gpr)(val) >> 32); \
+    *(uint32_t*)(rdram + RECOMP_RDRAM_OFFSET(((reg) + (offset) + 4))) = (uint32_t)((gpr)(val) >> 0); \
+    *(uint32_t*)(rdram + RECOMP_RDRAM_OFFSET(((reg) + (offset) + 0))) = (uint32_t)((gpr)(val) >> 32); \
 }
 
 static inline uint64_t load_doubleword(uint8_t* rdram, gpr reg, gpr offset) {
